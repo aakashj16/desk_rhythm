@@ -1,5 +1,20 @@
 # Desk Rhythm verification
 
+## v0.4.1
+
+The offscreen regression test confirms that Esc re-enables the completion
+checkmark on a due break. The checkmark resets the work interval and remains
+disabled during an active fullscreen break.
+
+## v0.4.0 preflight
+
+The offscreen Qt suite checks the one-minute warning, 10-minute snooze,
+repeated warning, Esc dismissal, timer completion, and preview behavior.
+The install package was exercised in a temporary home and XDG environment
+with an existing v0.3.1 install and rollback snapshot. A live KDE Wayland
+session was unavailable. Native blur, full-screen stacking, focus,
+notification actions, and the optional KDE command shortcut need on-device checks.
+
 ## v0.3.1 milestone checks
 
 - Offscreen Qt tests and manual checks verified mouse/keyboard completion, Due badge transitions, stable row geometry and pause/resume. The live session-bus test was skipped.

@@ -23,6 +23,10 @@ class Notifications(QObject):
         super().__init__(parent)
         self.visual = self.make_process("Desktop notification")
         self.audio = self.make_process("Chime playback")
+        self.warning = QProcess(self)
+        self.warning.setStandardErrorFile(QProcess.nullDevice())
+        self.warning.finished.connect(self.warning_finished)
+        self.warning_action = None
         self.check = None
         self.last_chime = float("-inf")
 
@@ -65,6 +69,32 @@ class Notifications(QObject):
             self.check = QDBusPendingCallWatcher(connection.asyncCall(request, 750), self)
             self.check.finished.connect(self.after_inhibition_check)
         return show or sound
+
+    def warn_break(self, preferences, snooze):
+        now = time.localtime()
+        if not preferences["visual"] or in_quiet_hours(preferences, now.tm_hour * 60 + now.tm_min):
+            return
+        notifier = shutil.which("notify-send")
+        if not notifier or self.warning.state() != QProcess.ProcessState.NotRunning:
+            return
+        self.warning_action = snooze
+        self.warning.start(notifier, [
+            f"--app-name={APP_NAME}", "--expire-time=60000",
+            "--action=snooze=Snooze 10 min", f"--icon={RESOURCES / 'desk-rhythm.svg'}",
+            f"--hint=string:desktop-entry:{APP_ID}", "--hint=boolean:transient:true",
+            "Break Time starts in 1 minute", "Still busy? Snooze for 10 minutes.",
+        ])
+
+    def clear_break_warning(self):
+        self.warning_action = None
+        if self.warning.state() != QProcess.ProcessState.NotRunning:
+            self.warning.kill()
+
+    def warning_finished(self, code, status):
+        action, self.warning_action = self.warning_action, None
+        selection = bytes(self.warning.readAllStandardOutput()).strip()
+        if action and code == 0 and status == QProcess.ExitStatus.NormalExit and selection == b"snooze":
+            action()
 
     def after_inhibition_check(self, watcher):
         reply = QDBusPendingReply(watcher)

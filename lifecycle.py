@@ -16,7 +16,8 @@ from reminder_core import atomic_text
 
 PROJECT_FILES = (
     "desk_rhythm.py", "reminder_core.py", "desktop.py", "notifications.py",
-    "settings_dialog.py", "resources/desk-rhythm.svg", "resources/chime.wav",
+    "settings_dialog.py", "break_overlay.py", "resources/desk-rhythm.svg",
+    "resources/coffee.svg", "resources/chime.wav",
     "resources/LICENSE.md",
 )
 LEGACY = "desk-rhythm.desktop"

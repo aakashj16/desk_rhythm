@@ -12,7 +12,7 @@ from reminder_core import atomic_text, config_path, validate_settings
 
 APP_ID = "io.github.deskrhythm.DeskRhythm"
 APP_NAME = "Desk Rhythm"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.1"
 BASE = Path(__file__).resolve().parent
 RESOURCES = BASE / "resources"
 MARKER = "X-DeskRhythm-Managed=true"
@@ -22,6 +22,9 @@ DEFAULT_PREFERENCES = {
     "close_to_tray": True,
     "start_paused": False,
     "quiet_enabled": False,
+    "break_overlay": False,
+    "break_duration": 10,
+    "overlay_strength": "medium",
     "quiet_start": 22 * 60,
     "quiet_end": 8 * 60,
 }
@@ -54,7 +57,13 @@ def validate_preferences(raw: object) -> dict:
     if isinstance(raw, dict):
         for key, default in DEFAULT_PREFERENCES.items():
             value = raw.get(key)
-            if type(value) is type(default) and (type(default) is bool or 0 <= value < 1440):
+            if key == "overlay_strength":
+                valid = isinstance(value, str) and value in ("soft", "medium", "strong")
+            elif key == "break_duration":
+                valid = type(value) is int and 1 <= value <= 120
+            else:
+                valid = type(value) is type(default) and (type(default) is bool or 0 <= value < 1440)
+            if valid:
                 result[key] = value
     if result["quiet_start"] == result["quiet_end"]:
         result["quiet_enabled"] = False
@@ -63,7 +72,7 @@ def validate_preferences(raw: object) -> dict:
 
 def save_configuration(intervals: dict, preferences: dict, path: Path | None = None) -> None:
     if validate_settings(intervals) != intervals or validate_preferences(preferences) != preferences:
-        raise ValueError("Use intervals from 1 to 240 minutes and distinct quiet hours.")
+        raise ValueError("Use valid intervals, a break duration from 1 to 120 minutes, and distinct quiet hours.")
     atomic_text(path or config_path(),
                 json.dumps({**intervals, "preferences": preferences}, indent=2) + "\n")
 

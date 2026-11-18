@@ -119,6 +119,10 @@ class ReminderEngine:
         self.break_due = False
         self.break_remaining = self.settings["break_minutes"] * 60.0
 
+    def snooze_break(self) -> None:
+        self.break_due = False
+        self.break_remaining = 600.0
+
     def update_settings(self, settings: dict[str, int]) -> None:
         validated = validate_settings(settings)
         if validated != settings:

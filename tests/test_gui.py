@@ -7,7 +7,8 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PyQt6.QtCore import QObject, QTimer, pyqtClassInfo, pyqtProperty
+    from PyQt6.QtCore import QObject, Qt, QTimer, pyqtClassInfo, pyqtProperty
+    from PyQt6.QtTest import QTest
     from PyQt6.QtDBus import QDBusConnection, QDBusMessage, QDBusPendingReply, QDBusVariant
     from PyQt6.QtWidgets import QApplication
 except ImportError:
@@ -57,6 +58,76 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.engine.position_remaining, remaining)
         window.timer.stop()
         window.tray.hide()
+
+    def test_break_time_warn_snooze_escape_and_completion(self):
+        preferences = {**DEFAULT_PREFERENCES, "break_overlay": True, "break_duration": 10}
+        with patch("desk_rhythm.read_configuration", return_value=(DEFAULTS, preferences)):
+            window = Window(self.app)
+        self.addCleanup(lambda: (window.end_break(), window.timer.stop(), window.tray.hide()))
+
+        def advance(seconds):
+            window.last_tick -= seconds
+            window.scheduled_delay = seconds
+            window.refresh()
+
+        with patch.object(window.notifications, "warn_break") as warning:
+            window.engine.break_remaining = 61
+            advance(2)
+            self.assertEqual(warning.call_count, 1)
+            warning.call_args.args[1]()
+            self.assertGreater(window.engine.break_remaining, 599)
+            advance(539)
+            self.assertEqual(warning.call_count, 1)
+            advance(2)
+            self.assertEqual(warning.call_count, 2)
+            advance(60)
+
+        overlay = window.break_overlay
+        self.assertIsNotNone(overlay)
+        self.assertTrue(window.engine.break_due)
+        self.assertFalse(window.break_button.isEnabled())
+        surface = next(iter(overlay.surfaces.values()))
+        self.assertEqual(surface.timer_label.text(), "10:00")
+        QTest.keyClick(surface, Qt.Key.Key_Escape)
+        self.assertIsNone(window.break_overlay)
+        self.assertTrue(window.engine.break_due)
+        window.start_break()
+        overlay = window.break_overlay
+        overlay.deadline = overlay.now()
+        overlay.update()
+        self.assertIsNone(window.break_overlay)
+        self.assertFalse(window.engine.break_due)
+        self.assertGreater(window.engine.break_remaining, 3599)
+
+        window.engine.break_remaining = 61
+        with patch.object(window.notifications, "warn_break"):
+            advance(2)
+            advance(60)
+        surface = next(iter(window.break_overlay.surfaces.values()))
+        window.ack_break()
+        self.assertIsNotNone(window.break_overlay)
+        self.assertTrue(window.engine.break_due)
+        QTest.keyClick(surface, Qt.Key.Key_Escape)
+        self.assertTrue(window.break_button.isEnabled())
+        self.assertTrue(window.break_taken_action.isVisible())
+        window.break_button.click()
+        self.assertFalse(window.engine.break_due)
+        self.assertGreater(window.engine.break_remaining, 3599)
+        self.assertFalse(window.break_button.isEnabled())
+
+    def test_break_preview_does_not_reset_work_countdown(self):
+        preferences = {**DEFAULT_PREFERENCES, "start_paused": True}
+        with patch("desk_rhythm.read_configuration", return_value=(DEFAULTS, preferences)):
+            window = Window(self.app)
+        self.addCleanup(lambda: (window.end_break(), window.timer.stop(), window.tray.hide()))
+        window.engine.break_remaining = 147
+        window.preview_break("strong")
+        surface = next(iter(window.preview_overlay.surfaces.values()))
+        self.assertEqual(surface.timer_label.text(), "00:05")
+        self.assertEqual(round(surface.tint.alphaF() * 100), 65)
+        window.end_break()
+        self.assertIsNone(window.preview_overlay)
+        self.assertEqual(window.engine.break_remaining, 147)
 
     def test_chime_policy_accepts_only_explicit_false(self):
         alert = Notifications()

@@ -16,9 +16,10 @@ from PyQt6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from break_overlay import BreakOverlay
 from desktop import (
     APP_ID, APP_NAME, APP_VERSION, RESOURCES, autostart_enabled, read_configuration,
-    runtime_socket, save_configuration, set_autostart,
+    in_quiet_hours, runtime_socket, save_configuration, set_autostart,
 )
 from notifications import Notifications
 from reminder_core import ReminderEngine, countdown
@@ -102,6 +103,9 @@ class Window(QMainWindow):
         self.last_tick = time.monotonic()
         self.scheduled_delay = 0.0
         self.settings_dialog = None
+        self.break_overlay = None
+        self.preview_overlay = None
+        self.break_warned = False
         self.setWindowTitle(APP_NAME)
         self.tray = QSystemTrayIcon(QIcon(str(ICON)), self)
         self.notifications = Notifications(self)
@@ -174,8 +178,8 @@ class Window(QMainWindow):
         reminders.setHorizontalSpacing(16)
         reminders.setVerticalSpacing(8)
         reminders.setColumnStretch(0, 1)
-        self.water_time = self.add_reminder(reminders, 0, "Water", "Mark water as complete", self.ack_water)
-        self.break_time = self.add_reminder(reminders, 1, "Screen break", "Mark screen break as complete", self.ack_break)
+        self.water_time, _ = self.add_reminder(reminders, 0, "Water", "Mark water as complete", self.ack_water)
+        self.break_time, self.break_button = self.add_reminder(reminders, 1, "Screen break", "Mark screen break as complete", self.ack_break)
         layout.addLayout(reminders)
         layout.addStretch()
         self.adjustSize()
@@ -188,7 +192,7 @@ class Window(QMainWindow):
         button = CompletionButton(action)
         button.clicked.connect(slot)
         grid.addWidget(button, row, 2)
-        return status
+        return status, button
 
     def make_tray(self):
         self.menu = QMenu(self)
@@ -200,7 +204,10 @@ class Window(QMainWindow):
         self.menu.addAction("Snooze 10 minutes", self.snooze)
         self.menu.addSeparator()
         self.menu.addAction("I drank water", self.ack_water)
-        self.menu.addAction("Screen break taken", self.ack_break)
+        self.break_taken_action = self.menu.addAction("Screen break taken", self.ack_break)
+        self.break_start_action = self.menu.addAction("Start Break Time", self.start_break)
+        self.break_snooze_action = self.menu.addAction("Snooze Break Time 10 min", self.snooze_break)
+        self.break_end_action = self.menu.addAction("End Break Time early", self.end_break)
         self.menu.addSeparator()
         self.menu.addAction("Settings", self.open_settings)
         self.menu.addAction("Quit Desk Rhythm", self.quit_app)
@@ -218,6 +225,10 @@ class Window(QMainWindow):
             return
         engine = self.engine
         events = engine.advance(elapsed)
+        if self.preferences["break_overlay"] and not engine.paused and not engine.break_due:
+            if engine.break_remaining <= 60 and not self.break_warned:
+                self.break_warned = True
+                self.notifications.warn_break(self.preferences, self.snooze_break)
         if not events:
             return
         messages = []
@@ -229,8 +240,12 @@ class Window(QMainWindow):
                                 else ("Time to sit", "Return to your seated position."))
             elif event == "water":
                 messages.append(("Time to sip water", "Mark it done when you are ready."))
+            elif self.preferences["break_overlay"] and self.break_warned and not self.quiet_now():
+                self.start_break()
             else:
                 messages.append(("Take a screen break", "Look away from the screen or step away for a moment."))
+        if not messages:
+            return
         title, body = (messages[0] if len(messages) == 1 else
                        ("Time for a break", "\n".join(item[0] for item in messages)))
         self.notifications.send(title, body, self.preferences)
@@ -249,7 +264,18 @@ class Window(QMainWindow):
         self.progress.setEnabled(not engine.paused)
         self.progress.setValue(round(1000 * (1 - engine.position_remaining / self.phase_span)))
         self.water_time.set_status(engine.water_due, engine.water_remaining)
+        running_break = self.break_overlay is not None
+        overlay_mode = self.preferences["break_overlay"]
         self.break_time.set_status(engine.break_due, engine.break_remaining)
+        can_complete = self.can_acknowledge_break()
+        self.break_button.setEnabled(can_complete)
+        self.break_taken_action.setVisible(can_complete)
+        self.break_start_action.setVisible(overlay_mode)
+        self.break_start_action.setEnabled(engine.break_due and not running_break and not engine.paused)
+        self.break_snooze_action.setVisible(overlay_mode)
+        self.break_snooze_action.setEnabled(not running_break and not engine.paused
+                                           and (engine.break_due or engine.break_remaining <= 60))
+        self.break_end_action.setVisible(running_break or self.preview_overlay is not None)
         self.pause_button.setText("&Resume" if engine.paused else "&Pause")
         self.pause_action.setEnabled(not engine.paused)
         self.resume_action.setEnabled(engine.paused)
@@ -263,6 +289,8 @@ class Window(QMainWindow):
                 remaining.append(engine.water_remaining)
             if not engine.break_due:
                 remaining.append(engine.break_remaining)
+                if overlay_mode and not self.break_warned and engine.break_remaining > 60:
+                    remaining.append(engine.break_remaining - 60)
             visible = self.isVisible() and not self.isMinimized()
             self.scheduled_delay = min([1.0, *remaining] if visible else remaining)
             # QTimer takes a signed 32-bit millisecond interval.
@@ -283,7 +311,9 @@ class Window(QMainWindow):
 
     def toggle_pause(self):
         self.advance()
-        self.engine.toggle_pause()
+        if self.engine.toggle_pause():
+            self.clear_break_warning()
+            self.end_break()
         self.refresh()
 
     def switch_position(self):
@@ -303,10 +333,69 @@ class Window(QMainWindow):
         self.engine.acknowledge_water()
         self.refresh()
 
+    def can_acknowledge_break(self):
+        return self.break_overlay is None and (
+            not self.preferences["break_overlay"] or self.engine.break_due
+        )
+
     def ack_break(self):
         self.advance()
-        self.engine.acknowledge_break()
+        if self.can_acknowledge_break():
+            self.clear_break_warning()
+            self.engine.acknowledge_break()
         self.refresh()
+
+    def quiet_now(self):
+        local = time.localtime()
+        return in_quiet_hours(self.preferences, local.tm_hour * 60 + local.tm_min)
+
+    def clear_break_warning(self):
+        self.break_warned = False
+        self.notifications.clear_break_warning()
+
+    def snooze_break(self):
+        if (self.preferences["break_overlay"] and not self.engine.paused
+                and self.break_overlay is None):
+            self.engine.snooze_break()
+            self.last_tick = time.monotonic()
+            self.clear_break_warning()
+            self.refresh()
+
+    def start_break(self):
+        if (not self.preferences["break_overlay"] or self.break_overlay is not None
+                or not self.engine.break_due or self.engine.paused):
+            return
+        self.clear_break_warning()
+        if self.preview_overlay is not None:
+            self.preview_overlay.dismiss()
+        self.break_overlay = BreakOverlay(
+            self.app, self.preferences["break_duration"] * 60,
+            self.preferences["overlay_strength"], self.break_finished,
+        )
+        self.break_overlay.start()
+
+    def break_finished(self, completed):
+        self.break_overlay = None
+        if completed:
+            self.engine.acknowledge_break()
+        self.refresh()
+
+    def preview_break(self, strength):
+        if self.break_overlay is not None or self.preview_overlay is not None:
+            return
+        self.preview_overlay = BreakOverlay(self.app, 5, strength, self.preview_finished)
+        self.preview_overlay.start()
+        self.refresh()
+
+    def preview_finished(self, completed):
+        self.preview_overlay = None
+        self.refresh()
+
+    def end_break(self):
+        if self.break_overlay is not None:
+            self.break_overlay.dismiss()
+        if self.preview_overlay is not None:
+            self.preview_overlay.dismiss()
 
     def apply_settings(self, intervals, preferences, login):
         if preferences["quiet_enabled"] and preferences["quiet_start"] == preferences["quiet_end"]:
@@ -321,7 +410,9 @@ class Window(QMainWindow):
                 set_autostart(previous_login)
             raise
         self.advance()
-        if intervals != self.engine.settings:
+        if intervals != self.engine.settings or preferences["break_overlay"] != self.preferences["break_overlay"]:
+            self.clear_break_warning()
+            self.end_break()
             self.engine.update_settings(intervals)
             self.phase_span = self.engine.duration_for_phase()
         self.preferences = preferences
@@ -333,6 +424,7 @@ class Window(QMainWindow):
             return
         self.open_window()
         dialog = SettingsDialog(self)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.settings_dialog = dialog
         try:
             dialog.exec()
@@ -354,6 +446,8 @@ class Window(QMainWindow):
             self.open_window()
 
     def quit_app(self):
+        self.clear_break_warning()
+        self.end_break()
         self.tray.hide()
         self.app.quit()
 
@@ -376,6 +470,7 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     background = "--background" in sys.argv
+    end_break = "--end-break" in sys.argv
     endpoint = runtime_socket()
     endpoint.parent.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(endpoint) + ".lock")
@@ -386,9 +481,14 @@ def main() -> int:
         client = QLocalSocket()
         client.connectToServer(str(endpoint))
         if client.waitForConnected(750):
-            return 0
+            client.write(b"end-break\n" if end_break else b"open\n")
+            return 0 if client.waitForBytesWritten(750) else 1
         print("Desk Rhythm is starting or its instance cannot be reached.", file=sys.stderr)
         return 1
+
+    if end_break:
+        lock.unlock()
+        return 0
 
     server = QLocalServer(app)
     server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
@@ -399,12 +499,22 @@ def main() -> int:
 
     window = Window(app)
 
+    def handle_message(peer):
+        if not peer.canReadLine():
+            return
+        message = bytes(peer.readLine(32))
+        if message == b"end-break\n":
+            window.end_break()
+        elif message == b"open\n":
+            window.open_window()
+        peer.disconnectFromServer()
+
     def receive_connection():
         while server.hasPendingConnections():
             peer = server.nextPendingConnection()
-            window.open_window()
-            peer.disconnectFromServer()
-            peer.deleteLater()
+            peer.readyRead.connect(lambda peer=peer: handle_message(peer))
+            peer.disconnected.connect(peer.deleteLater)
+            handle_message(peer)
 
     server.newConnection.connect(receive_connection)
     if not background or not window.tray.isSystemTrayAvailable():

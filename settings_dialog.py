@@ -2,7 +2,7 @@
 
 from PyQt6.QtCore import QTime
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
     QMessageBox, QPushButton, QSpinBox, QTabWidget, QTimeEdit, QVBoxLayout, QWidget,
 )
 
@@ -22,7 +22,7 @@ class SettingsDialog(QDialog):
         self.intervals = {}
         for key, caption in (
             ("sit_minutes", "Sitting"), ("stand_minutes", "Standing"),
-            ("water_minutes", "Water"), ("break_minutes", "Screen break"),
+            ("water_minutes", "Water"),
         ):
             spin = QSpinBox()
             spin.setRange(1, 240)
@@ -34,8 +34,33 @@ class SettingsDialog(QDialog):
         info.setWordWrap(True)
         intervals.addRow(info)
 
-        alerts = self.tab(tabs, "Notifications")
         self.checks = {}
+        breaks = self.tab(tabs, "Break Time")
+        self.add_check(breaks, "break_overlay", "Use a fullscreen break overlay")
+        work_interval = QSpinBox()
+        work_interval.setRange(1, 240)
+        work_interval.setSuffix(" min")
+        work_interval.setValue(window.engine.settings["break_minutes"])
+        breaks.addRow("Work interval", work_interval)
+        self.intervals["break_minutes"] = work_interval
+        self.break_duration = QSpinBox()
+        self.break_duration.setRange(1, 120)
+        self.break_duration.setSuffix(" min")
+        self.break_duration.setValue(window.preferences["break_duration"])
+        breaks.addRow("Break duration", self.break_duration)
+        self.strength = QComboBox()
+        for strength in ("soft", "medium", "strong"):
+            self.strength.addItem(strength.capitalize(), strength)
+        self.strength.setCurrentIndex(self.strength.findData(window.preferences["overlay_strength"]))
+        breaks.addRow("Overlay strength", self.strength)
+        preview_overlay = QPushButton("Preview overlay")
+        preview_overlay.clicked.connect(lambda: window.preview_break(self.strength.currentData()))
+        breaks.addRow(preview_overlay)
+        help_text = QLabel("KDE controls the blur. Overlay strength adjusts the dimming.")
+        help_text.setWordWrap(True)
+        breaks.addRow(help_text)
+
+        alerts = self.tab(tabs, "Notifications")
         self.add_check(alerts, "visual", "Show desktop notifications")
         self.add_check(alerts, "audio", "Play the gentle chime")
         self.add_check(alerts, "quiet_enabled", "Mute reminders during quiet hours")
@@ -99,6 +124,8 @@ class SettingsDialog(QDialog):
         for key, field in self.times.items():
             value = field.time()
             values[key] = value.hour() * 60 + value.minute()
+        values["break_duration"] = self.break_duration.value()
+        values["overlay_strength"] = self.strength.currentData()
         return values
 
     def test_notification(self):
